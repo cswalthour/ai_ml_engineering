@@ -1,1 +1,17 @@
 .DS_Store
+
+# conceal virtual environment
+.venv*
+
+# conceal .env file
+.env
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+*.eggs/
+
+# Python
+__pycache__/
+*.py[cod]
