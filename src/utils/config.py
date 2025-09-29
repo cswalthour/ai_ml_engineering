@@ -126,13 +126,12 @@ def chunk_text_data(session, db_name, schema_name):
     # sql to flatten pdf and jpg text data into chunks that will be used by Cortex Search service for embedding and indexing
     sql_insert_docs_chunks_table = f'''
 
-        INSERT INTO {db_name}.{schema_name}.DOCS_CHUNKS_TABLE (relative_path, chunk, chunk_index, category)
-
-        SELECT relative_path
-            , chunk
-            , chunk_index
-            , category 
-            FROM {db_name}.{schema_name}.RAW_TEXT
+        INSERT INTO {db_name}.{schema_name}.DOCS_CHUNKS_TABLE (relative_path, chunk, chunk_index)
+        
+        select relative_path, 
+                c.value::TEXT as chunk,
+                c.INDEX::INTEGER as chunk_index
+            FROM {db_name}.{schema_name}.RAW_TEXT,
             -- split the text into chunks (similar to cross join)
             LATERAL FLATTEN(input => SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER (
                 EXTRACTED_LAYOUT, -- full document text
@@ -162,6 +161,14 @@ def chunk_text_data(session, db_name, schema_name):
 
     print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE populated\n")
 
+    # test sql to preview the data
+    sql_test = f'''
+        SELECT * FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE limit 5
+    '''
+    print(f"Preview of {db_name}.{schema_name}.DOCS_CHUNKS_TABLE:\n")
+    print("------------------------------------------------------------------------------------------------\n")
+    print(session.sql(sql_test).collect())
+
 # method to orchestrate setup of Cortex Analyst and Cortex Search
 def orchestrate_cortex_setup(session, db_name, schema_name, stage_name):
 
@@ -190,5 +197,5 @@ def orchestrate_cortex_setup(session, db_name, schema_name, stage_name):
 
     # create table that will be used by Cortex Search service as a 
     # tool for Cortex Agents in order to retrieve information from PDF and JPEG files
-    create_insert_docs_chunks_table(session, db_name, schema_name)
+    chunk_text_data(session, db_name, schema_name)
         
