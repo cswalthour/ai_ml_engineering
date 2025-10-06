@@ -169,33 +169,143 @@ def chunk_text_data(session, db_name, schema_name):
     print("------------------------------------------------------------------------------------------------\n")
     print(session.sql(sql_test).collect())
 
+# method to test ai_classify function
+def test_ai_classify(session, db_name, schema_name):
+    
+    # test if doc_chunks_table has category column
+    sql_test_category_column = f'''
+
+        SELECT * FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE limit 5
+
+    '''
+
+    # convert to pandas dataframe
+    df_category_column = session.sql(sql_test_category_column).to_pandas()
+
+    if 'CATEGORY' not in df_category_column.columns:
+
+        print(f"Category column not found in {db_name}.{schema_name}.DOCS_CHUNKS_TABLE\n")
+
+        # boolean to check if category column exists
+        classify_exists = False
+
+    else:
+
+        print(f"Category column found in {db_name}.{schema_name}.DOCS_CHUNKS_TABLE\n")
+
+        # boolean to check if category column exists
+        classify_exists = True
+
+    # if category column does not exist, create the temp table and classify the data
+    if not classify_exists:
+
+        sql_test_ai_classify = f'''
+            
+            CREATE OR REPLACE TEMPORARY TABLE {db_name}.{schema_name}.docs_categories AS 
+            
+            WITH unique_documents AS (
+
+                SELECT DISTINCT 
+                    relative_path
+                    , chunk
+                    FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE
+                    WHERE chunk_index = 0
+                ),
+
+                docs_category_cte AS (
+                    SELECT
+                        relative_path,
+                        AI_CLASSIFY(chunk, ['Bike', 'Snow']):labels[0] AS category
+                    FROM
+                        unique_documents
+                )
+                SELECT
+                    *
+                    FROM
+                    docs_category_cte
+                ;
+
+
+        '''
+        print(f"Creating Temp Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE:\n")
+        print("------------------------------------------------------------------------------------------------\n")
+        print(session.sql(sql_test_ai_classify).collect())
+        
+        sql_test = f'''
+            SELECT * FROM {db_name}.{schema_name}.docs_categories limit 5
+        '''
+
+        session.sql(sql_test).show()
+
+        # sql to update the chunks table with the categories
+        sql_update_chunks_table = f'''
+
+            UPDATE {db_name}.{schema_name}.DOCS_CHUNKS_TABLE
+            SET category = docs_categories.category
+                FROM {db_name}.{schema_name}.docs_categories
+            WHERE {db_name}.{schema_name}.DOCS_CHUNKS_TABLE.relative_path = {db_name}.{schema_name}.docs_categories.relative_path
+
+        '''
+
+        # deploy the update
+        session.sql(sql_update_chunks_table).collect()
+
+        print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE updated with the categories:\n")
+
+        # test sql to preview the data
+        sql_test = f'''
+            SELECT * FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE limit 5
+        '''
+
+        session.sql(sql_test).show()
+
 # method to orchestrate setup of Cortex Analyst and Cortex Search
 def orchestrate_cortex_setup(session, db_name, schema_name, stage_name):
 
+    # check to see if chunks table exists
     try:
-    
-        # determine if temporary table exists; create if not
-        if session.sql(f"SELECT COUNT(*) FROM {db_name}.{schema_name}.RAW_TEXT").collect()[0][0] > 0:
 
-            print(f"Temporary table {db_name}.{schema_name}.RAW_TEXT already exists\n")
+        if session.sql(f"SELECT COUNT(*) FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE").collect()[0][0] > 0:
+
+            table_exists = True
+            
+            print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE already exists\n")
+
+        else:
+
+            table_exists = False
+
+            print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE does not exist\n")
 
     except SnowparkSQLException as e:
+
+        table_exists = False
         
         print(f"Error orchestrating Cortex setup: {e}\n")
 
+    # if table does not exist, read/process the pdfs and create the chunks table
+    if not table_exists:
+
+        # preparing temp table for Cortex Split Text Recursive Character function
         read_process_pdfs(session, db_name, schema_name, stage_name)
 
+        # test sql to preview the data
         sql_test = f'''
 
             SELECT * FROM {db_name}.{schema_name}.RAW_TEXT limit 5
 
         '''
 
+        # test sql to preview the data
         print(f"Temporary table {db_name}.{schema_name}.RAW_TEXT created:\n")
 
-        print(session.sql(sql_test).collect())
+        # show the data
+        session.sql(sql_test).show()
 
-    # create table that will be used by Cortex Search service as a 
-    # tool for Cortex Agents in order to retrieve information from PDF and JPEG files
-    chunk_text_data(session, db_name, schema_name)
+        # apply split text recursive character function to the data
+        # tool for Cortex Agents in order to retrieve information from PDF and JPEG files
+        chunk_text_data(session, db_name, schema_name)
+    
+    # test ai_classify function to classify the data (pass doc title and first chunk of the document to the function)
+    test_ai_classify(session, db_name, schema_name)
         

@@ -1,6 +1,6 @@
 from dotenv import load_dotenv
 import os
-from utils.config import create_snowflake_session, run_sql_script, orchestrate_cortex_setup
+from utils.cortex_setup import create_snowflake_session, run_sql_script, orchestrate_cortex_setup
 
 # load environment variables
 load_dotenv()
