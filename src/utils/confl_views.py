@@ -106,8 +106,17 @@ def create_snowflake_view(session: Session, table_name: str):
 
     '''
 
+    # sql to check if view exists
+    sql_check_view = f'''
+
+        SELECT *
+            FROM ADV_ANALYTICS_DEV_DB.DATA_MANAGEMENT.VW_CONFLUENCE_CONTENT_MGR
+            LIMIT 5
+
+    '''
+    
     # determine if view already exists
-    view_exists = session.sql(f"show views like 'ADV_ANALYTICS_DEV_DB.DATA_MANAGEMENT.VW_CONFLUENCE_CONTENT_MGR'").collect()
+    view_exists = session.sql(sql_check_view).collect()
 
     if view_exists == []:
 
