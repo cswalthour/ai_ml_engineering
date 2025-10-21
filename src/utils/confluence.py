@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 from snowflake.snowpark import Session
-from utils.confl_views import fetch_view_counts, ensure_latest_packages, extract_labels
+from utils.confl_views import fetch_view_counts, extract_labels, write_to_snowflake
 from datetime import datetime
 
 load_dotenv()
@@ -90,6 +90,7 @@ for i,r in enumerate(results):
         "id": r.get("id"),
         "title": r.get("title"),
         "type": r.get("type"),
+        "status": r.get("status"),
         "space_key": r.get("space", {}).get("key"),
         "created_by": r.get("history", {}).get("createdBy", {}).get("displayName"),
         "created_date": r.get("history", {}).get("createdDate"),
@@ -151,19 +152,8 @@ connection_params = {
     "schema": 'DATA_MANAGEMENT'
 }
 
-# ensure latest packages are installed
-ensure_latest_packages()
+# write to snowflake
+write_to_snowflake(df_results, "CONFLUENCE_CONTENT_MGR_V2", connection_params, drop_table=False)
 
-# create new snowpark session based on new config settings
-new_session = Session.builder.configs(connection_params).create()
-
-# create snowpark dataframe from df_results
-df_results_snowpark = new_session.create_dataframe(df_results)
-
-# write into snowflake table
-df_results_snowpark.write.mode("overwrite").save_as_table("CONFLUENCE_CONTENT_MGR")
-
-# close snowpark session
-new_session.close()
 
 
