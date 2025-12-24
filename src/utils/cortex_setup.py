@@ -49,7 +49,7 @@ def stage_exists(session, snowflake_objects):
         return False
 
 # method to run sql scripts
-def run_sql_script(session, script_path, snowflake_objects):
+def run_sql_script(session, script_path, snowflake_objects: dict):
 
     # derive database and schema from snowflake_objects
     db_name = snowflake_objects["db_name"]
@@ -78,16 +78,25 @@ def run_sql_script(session, script_path, snowflake_objects):
         print(f"Stage {stg_name.upper()} already exists\n")
 
 # method to read/process the pds using AI_PARSE_DOCUMENT
-def read_process_pdfs(session, db_name, schema_name, stage_name):
+def read_process_pdfs(session, snowflake_objects: dict):
+
+    # derive database and schema from snowflake_objects
+    db_name = snowflake_objects["db_name"]
+    sch_name = snowflake_objects["schema_name"]
+    stg_name = snowflake_objects["stage_name"]
+    role = snowflake_objects["role"]
+
+    # set role
+    session.use_role(role)
 
     # sql to read/process the pds using AI_PARSE_DOCUMENT
     sql_ai_parse_document = f'''
 
-    CREATE OR REPLACE TEMPORARY TABLE {db_name}.{schema_name}.RAW_TEXT AS
+    CREATE OR REPLACE TEMPORARY TABLE {db_name}.{sch_name}.RAW_TEXT AS
 
     SELECT RELATIVE_PATH
         ,TO_VARCHAR(AI_PARSE_DOCUMENT(to_file(file_url), {{'mode': 'layout'}}):content) AS EXTRACTED_LAYOUT 
-        FROM DIRECTORY(@{db_name}.{schema_name}.{stage_name.upper()}) 
+        FROM DIRECTORY(@{db_name}.{sch_name}.{stg_name.upper()}) 
         WHERE RELATIVE_PATH LIKE '%.pdf';
         
     '''
@@ -95,13 +104,32 @@ def read_process_pdfs(session, db_name, schema_name, stage_name):
     # execute sql script
     session.sql(sql_ai_parse_document).collect()
 
+    # sql to preview the data
+    sql_preview_data = f'''
+        SELECT * FROM {db_name}.{sch_name}.RAW_TEXT limit 5
+    '''
+
+    # preview the data
+    print(f"Preview of {db_name}.{sch_name}.RAW_TEXT:\n")
+    print("------------------------------------------------------------------------------------------------\n")
+    session.sql(sql_preview_data).show()
+
 # method to create table that will be used by Cortex Search service as a 
 # tool for Cortex Agents in order to retrieve information from PDF and JPEG files
-def chunk_text_data(session, db_name, schema_name):
+def chunk_text_data(session, snowflake_objects: dict):
+
+    # derive database and schema from snowflake_objects
+    db_name = snowflake_objects["db_name"]
+    sch_name = snowflake_objects["schema_name"]
+    stg_name = snowflake_objects["stage_name"]
+    role = snowflake_objects["role"]
+
+    # set role
+    session.use_role(role)
 
     sql_create_docs_chunks_table = f'''
 
-        CREATE OR REPLACE TABLE {db_name}.{schema_name}.DOCS_CHUNKS_TABLE (
+        CREATE OR REPLACE TABLE {db_name}.{sch_name}.DOCS_CHUNKS_TABLE (
     
             RELATIVE_PATH VARCHAR(16777216), -- Relative path to the PDF file
             CHUNK VARCHAR(16777216), -- Piece of text
@@ -112,17 +140,17 @@ def chunk_text_data(session, db_name, schema_name):
     # execute sql script
     session.sql(sql_create_docs_chunks_table).collect()
 
-    print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE created\n")
+    print(f"Table {db_name}.{sch_name}.DOCS_CHUNKS_TABLE created\n")
 
     # sql to flatten pdf and jpg text data into chunks that will be used by Cortex Search service for embedding and indexing
     sql_insert_docs_chunks_table = f'''
 
-        INSERT INTO {db_name}.{schema_name}.DOCS_CHUNKS_TABLE (relative_path, chunk, chunk_index)
+        INSERT INTO {db_name}.{sch_name}.DOCS_CHUNKS_TABLE (relative_path, chunk, chunk_index)
         
         select relative_path, 
                 c.value::TEXT as chunk,
                 c.INDEX::INTEGER as chunk_index
-            FROM {db_name}.{schema_name}.RAW_TEXT,
+            FROM {db_name}.{sch_name}.RAW_TEXT,
             -- split the text into chunks (similar to cross join)
             LATERAL FLATTEN(input => SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER (
                 EXTRACTED_LAYOUT, -- full document text
@@ -150,13 +178,13 @@ def chunk_text_data(session, db_name, schema_name):
     # execute sql script
     session.sql(sql_insert_docs_chunks_table).collect()
 
-    print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE populated\n")
+    print(f"Table {db_name}.{sch_name}.DOCS_CHUNKS_TABLE populated\n")
 
     # test sql to preview the data
     sql_test = f'''
-        SELECT * FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE limit 5
+        SELECT * FROM {db_name}.{sch_name}.DOCS_CHUNKS_TABLE limit 5
     '''
-    print(f"Preview of {db_name}.{schema_name}.DOCS_CHUNKS_TABLE:\n")
+    print(f"Preview of {db_name}.{sch_name}.DOCS_CHUNKS_TABLE:\n")
     print("------------------------------------------------------------------------------------------------\n")
     print(session.sql(sql_test).collect())
 

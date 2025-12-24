@@ -1,7 +1,9 @@
 from dotenv import load_dotenv
 import os
 from utils.sp_methods import create_snowflake_session
-from utils.cortex_setup import run_sql_script, orchestrate_cortex_setup
+from utils.cortex_setup import run_sql_script
+from utils.cortex_setup import read_process_pdfs
+from utils.cortex_setup import chunk_text_data
 
 # load environment variables
 load_dotenv()
@@ -27,16 +29,17 @@ snowflake_objects = {
     "db_name": "dash_cortex_agents"
 }
 
+# add key-pair to snowflake_objects
+snowflake_objects["role"] = "SNOWFLAKE_INTELLIGENCE_ADMIN"
+
 # run sql script
 run_sql_script(sp_session, "../setup.sql", snowflake_objects)
 
-# orchestrate setup of Cortex Analyst and Cortex Search
-orchestrate_cortex_setup(
-    sp_session, 
-    snowflake_objects["db_name"], 
-    snowflake_objects["schema_name"], 
-    snowflake_objects["stage_name"]
-)
+# read/process the pdfs
+read_process_pdfs(sp_session, snowflake_objects)
+
+# chunk the text data
+chunk_text_data(sp_session, snowflake_objects)
 
 # close snowflake session
 sp_session.close()
