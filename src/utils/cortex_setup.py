@@ -86,7 +86,9 @@ def read_process_pdfs(session, snowflake_objects: dict):
     stg_name = snowflake_objects["stage_name"]
     role = snowflake_objects["role"]
 
-    # set role
+    # set session context
+    session.use_database(db_name)
+    session.use_schema(sch_name)
     session.use_role(role)
 
     # sql to read/process the pds using AI_PARSE_DOCUMENT
@@ -114,29 +116,47 @@ def read_process_pdfs(session, snowflake_objects: dict):
     print("------------------------------------------------------------------------------------------------\n")
     session.sql(sql_preview_data).show()
 
+# method to check if snowflake table exists
+def table_exists(session: Session, table_name: str):
+
+    # extract database and schema from session
+    db = session.get_current_database()
+    sch = session.get_current_schema()
+
+    try:
+        result = session.sql(f"SELECT COUNT(*) FROM {db}.{sch}.{table_name}").collect()
+
+        if result[0][0] > 0:
+            print(f"Table {db}.{sch}.{table_name} exists\n")
+            return True
+
+    except SnowparkSQLException as e:
+
+        print(f"Error checking if table exists: {e}\n")
+        print(f"Table {db}.{sch}.{table_name} does not exist\n")
+    
+        return False
+
 # method to create table that will be used by Cortex Search service as a 
 # tool for Cortex Agents in order to retrieve information from PDF and JPEG files
-def chunk_text_data(session, snowflake_objects: dict):
+def chunk_text_data(session):
 
-    # derive database and schema from snowflake_objects
-    db_name = snowflake_objects["db_name"]
-    sch_name = snowflake_objects["schema_name"]
-    stg_name = snowflake_objects["stage_name"]
-    role = snowflake_objects["role"]
+    # fetch db/schema from session
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
 
-    # set role
-    session.use_role(role)
-
+    # create table
     sql_create_docs_chunks_table = f'''
 
         CREATE OR REPLACE TABLE {db_name}.{sch_name}.DOCS_CHUNKS_TABLE (
-    
+
             RELATIVE_PATH VARCHAR(16777216), -- Relative path to the PDF file
             CHUNK VARCHAR(16777216), -- Piece of text
             CHUNK_INDEX INTEGER, -- Index for the text
             CATEGORY VARCHAR(16777216) -- Will hold the document category to enable filtering
         );
     '''
+
     # execute sql script
     session.sql(sql_create_docs_chunks_table).collect()
 
@@ -189,142 +209,162 @@ def chunk_text_data(session, snowflake_objects: dict):
     print(session.sql(sql_test).collect())
 
 # method to test ai_classify function
-def test_ai_classify(session, db_name, schema_name):
-    
-    # test if doc_chunks_table has category column
-    sql_test_category_column = f'''
+def ai_classify(session):
 
-        SELECT * FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE limit 5
+    # fetch db/schema from session
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
+
+    sql_test_ai_classify = f'''
+        
+        CREATE OR REPLACE TEMPORARY TABLE {db_name}.{sch_name}.docs_categories AS 
+        
+        WITH unique_documents AS (
+
+            -- get unique documents
+            SELECT DISTINCT 
+                relative_path
+                , chunk
+                FROM {db_name}.{sch_name}.DOCS_CHUNKS_TABLE
+                --WHERE chunk_index = 0
+            ),
+
+            docs_category_cte AS (
+
+                SELECT
+                    relative_path,
+                    AI_CLASSIFY(chunk, ['Bike', 'Snow']):labels[0] AS category
+                FROM
+                    unique_documents
+            )
+            SELECT
+                *
+                FROM
+                docs_category_cte
+            ;
+
 
     '''
 
-    # convert to pandas dataframe
-    df_category_column = session.sql(sql_test_category_column).to_pandas()
+    session.sql(sql_test_ai_classify).collect()
 
-    if 'CATEGORY' not in df_category_column.columns:
+    # sql to update the chunks table with the categories
+    sql_update_chunks_table = f'''
 
-        print(f"Category column not found in {db_name}.{schema_name}.DOCS_CHUNKS_TABLE\n")
+        UPDATE {db_name}.{sch_name}.DOCS_CHUNKS_TABLE
+        SET category = docs_categories.category
+            FROM {db_name}.{sch_name}.docs_categories
+        WHERE {db_name}.{sch_name}.DOCS_CHUNKS_TABLE.relative_path = {db_name}.{sch_name}.docs_categories.relative_path
 
-        # boolean to check if category column exists
-        classify_exists = False
+    '''
 
+    # deploy the update
+    session.sql(sql_update_chunks_table).collect()
+
+    print(f"Table {db_name}.{sch_name}.DOCS_CHUNKS_TABLE updated with the categories:\n")
+
+# method to determine if chunking table exists and if not, create it
+def create_chunk_table(session, table_name: str):
+
+    # check if table with chunked text data exists
+    if not table_exists(session, f"{table_name}"):
+
+        # chunk text data
+        chunk_text_data(session)
+
+    # determine if chunk table has ai_classify column
+    sql_check_ai_classify_column = f'''
+        SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_NAME = '{table_name}' AND COLUMN_NAME = 'CATEGORY'
+    '''
+
+    # execute sql script
+    result = session.sql(sql_check_ai_classify_column).collect()
+
+    colnames = [row[0] for row in result]
+
+    # inspect result for "category" column
+    if "CATEGORY" in colnames:
+        print(f"Table {table_name} has ai_classify column\n")
     else:
+        print(f"Table {table_name} does not have ai_classify column\n")
 
-        print(f"Category column found in {db_name}.{schema_name}.DOCS_CHUNKS_TABLE\n")
+        # execute ai_classify function
+        ai_classify(session)
 
-        # boolean to check if category column exists
-        classify_exists = True
+# method to use AI_COMPLETE function to generate image descriptions
+def process_images(session, snowflake_objects: dict):
 
-    # if category column does not exist, create the temp table and classify the data
-    if not classify_exists:
+    # fetch db/schema from session
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
+    stg_name = snowflake_objects["stage_name"]
 
-        sql_test_ai_classify = f'''
-            
-            CREATE OR REPLACE TEMPORARY TABLE {db_name}.{schema_name}.docs_categories AS 
-            
-            WITH unique_documents AS (
+    # create table
+    sql_create_docs_images_table = f'''
 
-                SELECT DISTINCT 
-                    relative_path
-                    , chunk
-                    FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE
-                    WHERE chunk_index = 0
-                ),
+        insert into {db_name}.{sch_name}.DOCS_CHUNKS_TABLE (relative_path, 
+        chunk, chunk_index, category)
+            SELECT 
+                RELATIVE_PATH,
+                CONCAT('This is a picture describing the bike or ski: '|| 
+                RELATIVE_PATH || 
+                    ' | Description: ' ||
+                    AI_COMPLETE('claude-4-sonnet',
+                    'Describe this image: ',
+                    TO_FILE('@DOCS', RELATIVE_PATH))) as chunk,
+                0,
+                AI_CLASSIFY(
+                    TO_FILE('@DOCS', RELATIVE_PATH), ['Bike','Snow']):labels[0] as category,
+            FROM DIRECTORY('@{db_name}.{sch_name}.{stg_name.upper()}') 
+            WHERE
+                RELATIVE_PATH LIKE '%.jpeg' 
+            --limit 5   
+            ;
 
-                docs_category_cte AS (
-                    SELECT
-                        relative_path,
-                        AI_CLASSIFY(chunk, ['Bike', 'Snow']):labels[0] AS category
-                    FROM
-                        unique_documents
-                )
-                SELECT
-                    *
-                    FROM
-                    docs_category_cte
-                ;
+    '''
 
+    # execute sql script
+    session.sql(sql_create_docs_images_table).collect()
 
-        '''
-        print(f"Creating Temp Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE:\n")
-        print("------------------------------------------------------------------------------------------------\n")
-        print(session.sql(sql_test_ai_classify).collect())
+    print(f"Table {db_name}.{sch_name}.DOCS_CHUNKS_TABLE populated with image descriptions\n")
+
+    # test sql to preview the data
+    sql_test = f'''
+        SELECT * FROM {db_name}.{sch_name}.DOCS_CHUNKS_TABLE
+        WHERE chunk ILIKE '%Description%'
+        --limit 5
+    '''
+
+    print(f"Preview of {db_name}.{sch_name}.DOCS_CHUNKS_TABLE:\n")
+    print("------------------------------------------------------------------------------------------------\n")
+    session.sql(sql_test).show()
+
+# method to determine if image processing alredy happened
+def check_image_processing(session, snowflake_objects: dict):
+
+    # fetch db/schema from session
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
+
+    # sql to check if image files exist in DOCS_CHUNKS_TABLE
+    sql_check_image_processing = f'''
+
+        SELECT COUNT(*) FROM {db_name}.{sch_name}.DOCS_CHUNKS_TABLE
+        WHERE relative_path LIKE '%.jpeg'
+        --limit 5
+
+    '''
+
+    # execute sql script
+    result = session.sql(sql_check_image_processing).collect()
+
+    if result[0][0] > 0:
+
+        print(f"Image processing already happened\n")
         
-        sql_test = f'''
-            SELECT * FROM {db_name}.{schema_name}.docs_categories limit 5
-        '''
+    else:
+        print(f"Image processing not happened\n")
+        # process the images
+        process_images(session, snowflake_objects)
 
-        session.sql(sql_test).show()
-
-        # sql to update the chunks table with the categories
-        sql_update_chunks_table = f'''
-
-            UPDATE {db_name}.{schema_name}.DOCS_CHUNKS_TABLE
-            SET category = docs_categories.category
-                FROM {db_name}.{schema_name}.docs_categories
-            WHERE {db_name}.{schema_name}.DOCS_CHUNKS_TABLE.relative_path = {db_name}.{schema_name}.docs_categories.relative_path
-
-        '''
-
-        # deploy the update
-        session.sql(sql_update_chunks_table).collect()
-
-        print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE updated with the categories:\n")
-
-        # test sql to preview the data
-        sql_test = f'''
-            SELECT * FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE limit 5
-        '''
-
-        session.sql(sql_test).show()
-
-# method to orchestrate setup of Cortex Analyst and Cortex Search
-def orchestrate_cortex_setup(session, db_name, schema_name, stage_name):
-
-    # check to see if chunks table exists
-    try:
-
-        if session.sql(f"SELECT COUNT(*) FROM {db_name}.{schema_name}.DOCS_CHUNKS_TABLE").collect()[0][0] > 0:
-
-            table_exists = True
-            
-            print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE already exists\n")
-
-        else:
-
-            table_exists = False
-
-            print(f"Table {db_name}.{schema_name}.DOCS_CHUNKS_TABLE does not exist\n")
-
-    except SnowparkSQLException as e:
-
-        table_exists = False
-        
-        print(f"Error orchestrating Cortex setup: {e}\n")
-
-    # if table does not exist, read/process the pdfs and create the chunks table
-    if not table_exists:
-
-        # preparing temp table for Cortex Split Text Recursive Character function
-        read_process_pdfs(session, db_name, schema_name, stage_name)
-
-        # test sql to preview the data
-        sql_test = f'''
-
-            SELECT * FROM {db_name}.{schema_name}.RAW_TEXT limit 5
-
-        '''
-
-        # test sql to preview the data
-        print(f"Temporary table {db_name}.{schema_name}.RAW_TEXT created:\n")
-
-        # show the data
-        session.sql(sql_test).show()
-
-        # apply split text recursive character function to the data
-        # tool for Cortex Agents in order to retrieve information from PDF and JPEG files
-        chunk_text_data(session, db_name, schema_name)
-    
-    # test ai_classify function to classify the data (pass doc title and first chunk of the document to the function)
-    test_ai_classify(session, db_name, schema_name)
-        
