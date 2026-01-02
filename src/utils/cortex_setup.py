@@ -1,6 +1,9 @@
 import os
 import sys
 
+# standard python libraries
+import pandas as pd
+
 # import snowflake libraries
 from snowflake.snowpark import *
 from snowflake.ml import *
@@ -367,4 +370,138 @@ def check_image_processing(session, snowflake_objects: dict):
         print(f"Image processing not happened\n")
         # process the images
         process_images(session, snowflake_objects)
+
+# method to create Cortex Search service for the chunk table
+def create_search_docs(session):
+
+    # fetch db/schema from session
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
+
+    # sql to create Cortex Search service over unstructured data
+    sql_create_cortex_search_service = f'''
+
+        create or replace CORTEX SEARCH SERVICE DOCS
+            ON chunk
+            ATTRIBUTES relative_path, category
+            warehouse = COMPUTE_WH
+            TARGET_LAG = '1 hour'
+            EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'
+            as (
+                select chunk,
+                    chunk_index,
+                    relative_path,
+                    category
+                from {db_name}.{sch_name}.docs_chunks_table
+            );
+
+    '''
+
+    # execute sql script
+    session.sql(sql_create_cortex_search_service).collect()
+
+    print(f"Cortex Search service {db_name}.{sch_name}.DOCS created\n")
+
+# method to create Cortex Search service for the article name table
+def create_search_article_name(session):
+
+    # fetch db/schema from session
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
+
+    # sql to create Cortex Search service for the article name table
+    sql_create_cortex_search_article_name = f'''
+        create or replace CORTEX SEARCH SERVICE ARTICLE_NAME_SEARCH
+            ON ARTICLE_NAME
+            WAREHOUSE = COMPUTE_WH
+            TARGET_LAG = '1 hour'
+            EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'
+            as (
+            select ARTICLE_NAME
+            from {db_name}.{sch_name}.DIM_ARTICLE
+        );
+    '''
+
+    # execute sql script
+    session.sql(sql_create_cortex_search_article_name).collect()
+
+    print(f"Cortex Search service {db_name}.{sch_name}.ARTICLE_NAME created\n")
+
+# method to orchestrate setup of Cortex Search service
+def orchestrate_cortex(session: Session, service_name: str):
+
+    # fetch db/schema from session
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
+
+    # sql to check if Cortex Search service exists
+    sql_check_cortex_search_service = f'''
+
+        SHOW CORTEX SEARCH SERVICES LIKE '%{service_name}%' IN {db_name}.{sch_name};
+
+    '''
+
+    # execute sql script 
+    result = session.sql(sql_check_cortex_search_service).collect()
+
+    print(f"Cortex Search service metadata:\n")
+    print("------------------------------------------------------------------------------------------------\n")
+    print(pd.DataFrame(result))
+
+    # SHOW returns 0+ rows of metadata; the first column is typically a timestamp (CREATED_ON),
+    # so do NOT compare result[0][0] to an integer.
+    if len(result) > 0:
+        print(f"Cortex Search service {db_name}.{sch_name}.DOCS already exists\n")
+
+    elif service_name == "DOCS":
+            print(f"Cortex Search service {db_name}.{sch_name}.{service_name} does not exist\n")
+            # create Cortex Search service
+            create_search_docs(session)
+    elif service_name == "ARTICLE_NAME_SEARCH":
+
+        print(f"Cortex Search service {db_name}.{sch_name}.{service_name} does not exist\n")
+        
+        # create Cortex Search service
+        create_search_article_name(session)
+
+# method to quantify cortex-related credit consumption
+def quantify_cortex(session: Session, service_name: str):
+
+    # fetch db/schema from session and convert to string
+    db_name = session.get_current_database()
+    sch_name = session.get_current_schema()
+
+    # remove double quotes from db_name and sch_name and replace with single quotes
+    db_name = db_name.replace('"', "'")
+    sch_name = sch_name.replace('"', "'")
+
+    # convert service_name string to be used in the sql query
+    service_name_str = f"'%{service_name}%'"
+
+    # sql to quantify cortex-related credit consumption
+    sql_quantify_cortex = f'''
+        
+        SELECT TO_DATE(usage_date) AS USAGE_DATE
+            , database_name
+            , schema_name
+            , service_name
+            , credits
+            , ROUND(credits * 3,3) AS CREDITS_COST
+            FROM snowflake.account_usage.cortex_search_daily_usage_history
+            WHERE database_name = {db_name}
+            AND schema_name   = {sch_name}
+            AND service_name  ILIKE {service_name_str}
+            QUALIFY ROW_NUMBER() OVER(ORDER BY USAGE_DATE DESC) = 1
+            ORDER BY usage_date DESC
+
+    '''
+
+    print(sql_quantify_cortex)
+
+    # execute sql script and convert to pandas dataframe
+    result = session.sql(sql_quantify_cortex).to_pandas()
+
+    print(f"Most recent Cortex-related credit consumption:\n")
+    print("------------------------------------------------------------------------------------------------\n")
+    print(result)
 
