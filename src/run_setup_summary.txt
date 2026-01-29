@@ -1,0 +1,180 @@
+run_setup.py — what it does (and Cortex Search enablement decisions)
+===============================================================
+
+Purpose
+-------
+`src/run_setup.py` is an orchestration script that connects to Snowflake via Snowpark, prepares/derives unstructured + structured data artifacts, creates/ensures Cortex Search services exist for retrieval, optionally uploads semantic model YAML files to a stage, and finally prints the most recent Cortex Search credit usage for a service.
+
+High-level workflow (in order)
+------------------------------
+1) Load environment variables
+   - Uses `dotenv.load_dotenv()` to pull connection values from a `.env` file.
+
+2) Create a Snowflake (Snowpark) session
+   - Connection parameters are read from environment variables:
+     - ACCOUNT, USER, PASSWORD
+   - Role is set to `ACCOUNTADMIN` in the connection parameters.
+   - Warehouse is `COMPUTE_WH`, database is `SNOWFLAKE`, schema is `PUBLIC`.
+
+3) Optional “base object setup” via SQL script (guarded)
+   - Controlled by: `sp_params["initialize"]` (currently set to False).
+   - If `initialize == True`, `run_sql_script(session, "../setup.sql", snowflake_objects)` is executed.
+   - `run_sql_script()` is additionally guarded by a stage existence check:
+     - If the stage already exists, it prints a message and does not run the SQL statements.
+
+4) Switch to a role intended for Cortex/AI work
+   - Adds `snowflake_objects["role"] = "SNOWFLAKE_INTELLIGENCE_ADMIN"`.
+   - `read_process_pdfs()` sets Snowflake context:
+     - `use_database(dash_cortex_agents)`, `use_schema(data)`, `use_role(SNOWFLAKE_INTELLIGENCE_ADMIN)`.
+
+5) Ingest/parse PDFs into a RAW_TEXT table
+   - `read_process_pdfs()` uses `AI_PARSE_DOCUMENT(...)` to extract PDF content into:
+     - `{db}.{schema}.RAW_TEXT` (TEMP table)
+
+6) Create and populate a chunk table used for retrieval
+   - `create_chunk_table(session, "DOCS_CHUNKS_TABLE")`:
+     - If the chunk table does not exist, it is created and populated from `RAW_TEXT` by chunking text via:
+       - `SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER(...)`
+     - Ensures a `CATEGORY` column is populated (document classification) via `AI_CLASSIFY(...)` if missing.
+   - Chunking strategy (as implemented in `chunk_text_data()`):
+     - Source text: `RAW_TEXT.EXTRACTED_LAYOUT` (produced by `AI_PARSE_DOCUMENT(..., {'mode': 'layout'})`)
+     - Function: `SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER(...)`
+     - Parameters:
+       - `format_type`: `'markdown'`
+       - `target_chunk_size`: `1512`
+       - `overlap`: `256`
+       - `delimiters`: `['\n\n', '\n', ' ', '']`
+     - Output shape: one row per chunk with `(relative_path, chunk, chunk_index)`; later enriched with `category`.
+
+7) Optionally enrich with image descriptions (JPEGs)
+   - `check_image_processing()` checks whether any `%.jpeg` rows already exist in `DOCS_CHUNKS_TABLE`.
+   - If none exist, it calls `process_images()` which:
+     - Calls `AI_COMPLETE('claude-4-sonnet', ...)` on each image to produce a description chunk.
+     - Classifies the image into a category via `AI_CLASSIFY(...)`.
+     - Inserts the image-derived “chunk” rows into `DOCS_CHUNKS_TABLE`.
+
+8) Ensure Cortex Search services exist (Cortex Search “enablement”)
+   - `orchestrate_cortex(session, "DOCS")`
+   - Later: `orchestrate_cortex(session, "ARTICLE_NAME_SEARCH")`
+
+9) Create supporting structured tables for Cortex Agents
+   - Creates/loads these tables via `create_supporting_tables()`:
+     - DIM_ARTICLE, DIM_CUSTOMER, FACT_SALES
+
+10) Upload semantic model YAML files to a stage
+   - Uploads `semantic_search.yaml` and `semantic.yaml` to stage `SEMANTIC_FILES`.
+
+11) Print Cortex Search credit consumption
+   - `quantify_cortex(session, "DOCS")` queries:
+     - `snowflake.account_usage.cortex_search_daily_usage_history`
+   - Filters by current database + schema and `service_name ILIKE '%DOCS%'`.
+
+12) Close the session
+   - `sp_session.close()`
+
+
+Key decisions related to Cortex Search service enablement
+--------------------------------------------------------
+1) Service creation is gated by an existence check (idempotent behavior)
+   - `orchestrate_cortex()` runs:
+     - `SHOW CORTEX SEARCH SERVICES LIKE '%{service_name}%' IN {db}.{schema};`
+   - If any rows are returned (`len(result) > 0`), the script treats the service as existing and does not create it.
+   - If no rows are returned, it creates the service for the requested name.
+   - Implication: the script is designed to be safe to re-run without recreating services (unless manually dropped).
+
+2) Service definitions “hard-code” core enablement parameters
+   - For the DOCS retrieval service (`create_search_docs()`):
+     - Name: `DOCS`
+     - Indexed column: `chunk`
+     - Attributes: `relative_path`, `category` (enables filtering / metadata retrieval)
+     - Warehouse: `COMPUTE_WH`
+     - Target lag: `1 hour` (index freshness)
+     - Embedding model: `snowflake-arctic-embed-l-v2.0`
+     - Source query: selects from `{db}.{schema}.DOCS_CHUNKS_TABLE`
+   - For the article-name retrieval service (`create_search_article_name()`):
+     - Name: `ARTICLE_NAME_SEARCH`
+     - Indexed column: `ARTICLE_NAME`
+     - Warehouse: `COMPUTE_WH`
+     - Target lag: `1 hour`
+     - Embedding model: `snowflake-arctic-embed-l-v2.0`
+     - Source query: selects from `{db}.{schema}.DIM_ARTICLE`
+
+3) Services are defined with CREATE OR REPLACE, but orchestrated to avoid replacing
+   - The SQL used is `CREATE OR REPLACE CORTEX SEARCH SERVICE ...`.
+   - However, `orchestrate_cortex()` only calls the creation function when no matching service is found, so in normal runs it will not replace an existing service.
+
+4) Service-name matching is pattern-based
+   - The existence check uses `LIKE '%{service_name}%'` (substring match).
+   - Implication: multiple services could match; any match is treated as “already exists”.
+
+5) Session role/context is explicitly set before chunking and service creation
+   - `read_process_pdfs()` calls `use_database`, `use_schema`, and `use_role`.
+   - This means Cortex-related objects are created in `dash_cortex_agents.data` under the role `SNOWFLAKE_INTELLIGENCE_ADMIN` (after the role is set in `snowflake_objects`).
+
+Notes / quirks worth knowing
+----------------------------
+- `orchestrate_cortex()` prints “DOCS already exists” whenever it finds *any* matching service, even if `service_name` is `ARTICLE_NAME_SEARCH`. This is only a log message, but can be confusing when reading output.
+
+
+Decision breakdown: DOCS_CHUNKS_TABLE vs DIM_ARTICLE (chunking + embedding)
+---------------------------------------------------------------------------
+What is embedded/indexed
+- DOCS service:
+  - Embedded column: `DOCS_CHUNKS_TABLE.chunk`
+  - Each row is (mostly) a “semantic unit” (a chunk of PDF text or an AI-generated image description).
+- ARTICLE_NAME_SEARCH service:
+  - Embedded column: `DIM_ARTICLE.ARTICLE_NAME`
+  - Each row is a short string (the article name).
+
+Why DOCS_CHUNKS_TABLE is chunked
+- PDFs (and extracted layout text) are long-form content; embedding an entire document per row would:
+  - reduce retrieval precision (one vector would represent many topics),
+  - risk exceeding practical “good embedding input” sizes,
+  - make “answer highlighting” / citing the relevant passage harder.
+- Chunking converts long documents into many focused rows that can be retrieved independently.
+
+Why DIM_ARTICLE is not chunked before embedding
+- `ARTICLE_NAME` values are expected to be short and atomic (product/article titles).
+- Chunking a short title generally adds no value and can be harmful:
+  - it can split meaningful phrases,
+  - it increases row/embedding count (cost) without improving recall,
+  - it complicates matching (you want the whole title as a single retrieval unit).
+
+Tradeoffs + what could be missed (DOCS chunk size 1512 / overlap 256)
+- Potential misses / failure modes:
+  - Boundary loss: if a key sentence/definition straddles the boundary between two chunks, neither chunk alone may contain enough context to score highly.
+  - Dilution inside a chunk: a chunk of size 1512 can still contain multiple concepts; the embedding may “average” them, lowering similarity for niche details.
+  - Table/code/structured text issues: extracted layout may include artifacts; chunking preserves them and can hurt semantic similarity if noisy.
+- Why overlap helps:
+  - With overlap=256, some boundary content is repeated in the next chunk, reducing the chance that critical context is split exactly at the boundary.
+- Costs introduced by chunking + overlap:
+  - More rows → more embeddings and a larger index → higher refresh/indexing cost and potentially more redundant results.
+
+Tradeoffs (DIM_ARTICLE.ARTICLE_NAME not chunked)
+- Benefits:
+  - Maximum precision for title lookup (the whole title is embedded as a single unit).
+  - Lower cost (one embedding per article row).
+- What could be missed:
+  - If users search for attributes not present in the title (e.g., long descriptions/specs), this service cannot retrieve them because it only embeds `ARTICLE_NAME`.
+  - If titles are very long compound strings, lack of chunking can slightly reduce precision (but titles are usually short enough that this is acceptable).
+
+
+Tokenization: where it happens in this repo (and why it matters)
+---------------------------------------------------------------
+This repo does not explicitly configure a tokenizer, but “tokenization” still matters in two practical places:
+
+1) Pre-embedding text splitting (your controllable proxy for token budget)
+   - Implemented in `chunk_text_data()` via:
+     - `SNOWFLAKE.CORTEX.SPLIT_TEXT_RECURSIVE_CHARACTER(EXTRACTED_LAYOUT, 'markdown', 1512, 256, ['\n\n','\n',' ',''])`
+   - Implication:
+     - This determines how much text lands in each `DOCS_CHUNKS_TABLE.chunk` row (and therefore roughly how many tokens the embedding model will consume per row).
+     - Larger chunks / more overlap → fewer boundary misses but more duplicated content and higher embedding/indexing cost.
+
+2) Embedding-time tokenization (inside the embedding model used by Cortex Search)
+   - Implemented implicitly by the service configuration:
+     - `EMBEDDING_MODEL = 'snowflake-arctic-embed-l-v2.0'`
+     - The model applies its own tokenizer to the `ON` column text (e.g., `chunk` or `ARTICLE_NAME`) when building/refreshing the index.
+   - Implication:
+     - Very long or noisy text increases token count (cost/latency) and can dilute semantic signals.
+     - For `DIM_ARTICLE.ARTICLE_NAME` (short strings), tokenization effects are minimal and chunking is unnecessary.
+
