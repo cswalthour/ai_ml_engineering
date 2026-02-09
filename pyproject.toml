@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sfguide-build-data-agents-using-snowflake-cortex-ai"
+version = "0.1.0"
+description = "Snowflake Cortex AI data agents quickstart (Snowpark, Cortex Search, semantic models, Streamlit)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  # Core runtime
+  "snowflake-snowpark-python==1.30.0",
+  "pandas>=2.0,<3",
+  "python-dotenv>=1.0,<2",
+
+  # Streamlit app (local) / UI helpers
+  "streamlit==1.44.1",
+  "streamlit-extras==0.4.0",
+
+  # Imported by repo modules; commonly available in Snowflake-native runtimes,
+  # but needed for local execution where `snowflake.ml` is not preinstalled.
+  "snowflake-ml-python>=1.7,<2",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6,<1",
+]
+
+[tool.ruff]
+line-length = 100
+
