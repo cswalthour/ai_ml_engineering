@@ -1,0 +1,35 @@
+USE ROLE ACCOUNTADMIN;
+
+-- Create a safe place to put integration objects (recommended practice)
+CREATE DATABASE IF NOT EXISTS INTEGRATIONS_DB;
+CREATE SCHEMA IF NOT EXISTS INTEGRATIONS_DB.GIT;
+
+-- Let your runtime role use it
+GRANT USAGE ON DATABASE INTEGRATIONS_DB TO ROLE SNOWFLAKE_INTELLIGENCE_ADMIN;
+GRANT USAGE ON SCHEMA INTEGRATIONS_DB.GIT TO ROLE SNOWFLAKE_INTELLIGENCE_ADMIN;
+
+-- Switch to INTEGRATIONS_DB database and GIT schema
+USE DATABASE INTEGRATIONS_DB;
+USE SCHEMA INTEGRATIONS_DB.GIT;
+
+-- Create API integration
+CREATE OR REPLACE API INTEGRATION git_api_int_cswalthour
+  API_PROVIDER = git_https_api
+  API_ALLOWED_PREFIXES = ('https://github.com/cswalthour/')
+  ALLOWED_AUTHENTICATION_SECRETS = ('INTEGRATIONS_DB.GIT.GIT_PAT_SECRET')
+  ENABLED = TRUE;
+
+-- Create secret
+CREATE OR REPLACE SECRET git_pat_secret
+  TYPE = PASSWORD
+  USERNAME = 'cswalthour'
+  PASSWORD = '<your_github_pat>';
+
+-- Allow the runtime role to use the secret (optional if you always run as ACCOUNTADMIN).
+GRANT USAGE ON SECRET INTEGRATIONS_DB.GIT.GIT_PAT_SECRET TO ROLE SNOWFLAKE_INTELLIGENCE_ADMIN;
+
+-- Create git repository
+CREATE OR REPLACE GIT REPOSITORY git_repo_cswalthour
+  API_INTEGRATION = git_api_int_cswalthour
+  GIT_CREDENTIALS = INTEGRATIONS_DB.GIT.GIT_PAT_SECRET
+  ORIGIN = 'https://github.com/cswalthour/ai_ml_engineering.git';

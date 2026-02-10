@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 # import snowflake libraries
 from snowflake.snowpark import *
@@ -86,6 +87,10 @@ def create_snowflake_session(
 
         session = Session.builder.get_active_session()
 
+        # fetch user and account from session
+        user = session.get_current_user()
+        account = session.get_current_account()
+
         # print role used
         print(f"Role used: {session.get_current_role()}\n")
 
@@ -94,3 +99,55 @@ def create_snowflake_session(
 
     # return session
     return session
+
+# method to run a sql script
+def run_sql_script(
+    session,
+    sql_script_path: str,
+    initialize: bool = False,
+    *,
+    replacements: dict[str, str] | None = None,
+):
+    """
+    Run a SQL script.
+    """
+    # raise error if initialize is True and sql_script_path is None
+    if initialize and sql_script_path is None:
+        raise ValueError("sql_script_path is required when initialize=True")
+
+    # if initialize is True, run the sql script
+    if initialize:
+
+        # fetch current role
+        current_role = session.get_current_role()
+
+        # change to ACCOUNTADMIN role
+        session.use_role("ACCOUNTADMIN")
+
+        # print role used
+        print(f"Role used: {session.get_current_role()}\n")
+
+        # resolve path (so it works regardless of current working directory)
+        path = Path(sql_script_path).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+
+        # read the sql script
+        with open(path, "r", encoding="utf-8") as file:
+            sql_script = file.read()
+
+        # Apply simple string replacements (e.g., inject secrets from env at runtime).
+        if replacements:
+            for old, new in replacements.items():
+                sql_script = sql_script.replace(old, new)
+
+        # split statements on semicolons (naive split, but OK for these scripts)
+        statements = [stmt.strip() for stmt in sql_script.split(";") if stmt.strip()]
+
+        # execute statements one-by-one
+        for stmt in statements:
+            print(f"Running: {stmt}...\n")  # preview
+            session.sql(stmt).collect()
+
+        # switch back to original role
+        session.use_role(current_role)
