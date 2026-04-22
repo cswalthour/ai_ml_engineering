@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 import pandas as pd
 from snowflake.snowpark import Session
-from utils.confl_views import fetch_view_counts, extract_labels, write_to_snowflake
+from confl_views import fetch_view_counts, extract_labels, write_to_snowflake
 from datetime import datetime
 
 load_dotenv()
