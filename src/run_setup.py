@@ -33,7 +33,7 @@ sp_params = {
 }
 
 # create snowflake session
-sp_session = create_snowflake_session(sp_params)
+sp_session = create_snowflake_session(sp_params, local=True)
 
 # dictionary of snowflake objects
 snowflake_objects = {
