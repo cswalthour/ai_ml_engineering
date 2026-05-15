@@ -2,6 +2,7 @@
 snowflake-snowpark-python==1.30.0
 pandas>=2.0,<3
 python-dotenv>=1.0,<2
+anthropic>=0.35.0,<1
 
 # Streamlit UI (local)
 streamlit==1.44.1
