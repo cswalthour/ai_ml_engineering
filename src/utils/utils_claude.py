@@ -3,7 +3,7 @@ import os
 from anthropic import Anthropic
 
 # import custom modules
-from utils.claude_skills.persona_detect import detect_persona, build_system_parameter
+from utils.claude_skills.persona_detect import detect_persona, build_system_parameter, detect_temperature
 
 DEFAULT_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 
@@ -20,11 +20,17 @@ def add_assistant_message(conversation, message):
 # method to execute the conversation
 def claude_execute(client:Anthropic, conversation:list, user_message:str):
 
-    # add user message to the conversation
-    add_message(conversation, user_message)
+    # detect temperature and persona before storing message so cleaned text is saved
+    temp_detect = detect_temperature(user_message)
+    if temp_detect["has_temperature"]:
+        user_message = temp_detect["cleaned_message"]
 
-    # detect persona
     persona_detect = detect_persona(user_message)
+    if persona_detect["has_persona"]:
+        user_message = persona_detect["cleaned_message"]
+
+    # add cleaned user message to the conversation
+    add_message(conversation, user_message)
 
     # build system parameter
     system_parameter = build_system_parameter(persona_detect)
@@ -45,14 +51,31 @@ def claude_execute(client:Anthropic, conversation:list, user_message:str):
         # add system prompt text to client params
         client_params["system"] = system_prompt_text
 
+    # check if temperature is detected
+    if temp_detect["has_temperature"]:
+        # add temperature to client params
+        client_params["temperature"] = temp_detect["temperature"]
+
     # execute the conversation using claude client
-    response = client.messages.create(**client_params)
+    # response = client.messages.create(**client_params)
 
-    # get the response and print it in console
-    response_text = response.content[0].text
-    print(response_text)
+    # stream the response
+    with client.messages.stream(**client_params) as stream:
+        for text in stream.text_stream:
+            print(text, end="", flush=True)
 
-    # add assistant message to the conversation
-    add_assistant_message(conversation, response_text)
+        final_message = stream.get_final_message()
 
+    print()
+    
+    # check if final message is not empty
+    if final_message:
+        
+        # extract response text from final message
+        response_text = final_message.content[0].text
+
+        # add assistant message to the conversation
+        add_assistant_message(conversation, response_text)
+
+    # return conversation
     return conversation

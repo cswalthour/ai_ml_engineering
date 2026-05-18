@@ -71,7 +71,35 @@ def map_persona_to_system_prompt(persona_type: str) -> str:
     # If no template match, create dynamic prompt
     return f"You are {persona_type}. Respond accordingly in character."
 
-## 4. **System Parameter Construction**
+## 4. **Temperature Detection**
+TEMPERATURE_PATTERN = re.compile(
+    r"(?:set\s+)?temp(?:erature)?\s*[=:]\s*([0-1](?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+def detect_temperature(message: str) -> dict:
+    """
+    Detect if a temperature value is specified in the message.
+    Returns: {
+        'has_temperature': bool,
+        'temperature': float or None,
+        'cleaned_message': str
+    }
+    """
+    match = TEMPERATURE_PATTERN.search(message)
+    if match:
+        return {
+            'has_temperature': True,
+            'temperature': float(match.group(1)),
+            'cleaned_message': TEMPERATURE_PATTERN.sub('', message).strip(),
+        }
+    return {
+        'has_temperature': False,
+        'temperature': None,
+        'cleaned_message': message,
+    }
+
+## 5. **System Parameter Construction**
 def build_system_parameter(persona_info: dict) -> list:
     """
     Create system parameter for client.messages.create()
