@@ -28,6 +28,10 @@ dev = [
   "ruff>=0.6,<1",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
 [tool.ruff]
 line-length = 100
 

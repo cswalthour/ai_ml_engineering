@@ -4,8 +4,8 @@ import os
 from anthropic import Anthropic
 
 # import custom modules
-from utils.claude_skills.persona_detect import (
-    detect_persona, build_system_parameter, 
+from .claude_skills.persona_detect import (
+    detect_persona, build_system_parameter,
     detect_temperature, detect_stop_seq)
 
 DEFAULT_ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")

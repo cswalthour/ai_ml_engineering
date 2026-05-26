@@ -7,8 +7,8 @@ from anthropic import Anthropic
 # load environment variables
 load_dotenv()
 
-# load custom modules
-from utils.utils_claude import claude_execute, generate_dataset
+# load custom modules from src directory
+from src.utils.utils_claude import claude_execute, generate_dataset
 
 EXIT_COMMANDS = frozenset({"exit", "quit", "q"})
 
@@ -36,6 +36,7 @@ def main() -> None:
             print("Bye.")
             break
 
+        # generate dataset if command is given
         if "generate dataset" in user_message.lower():
             generate_dataset(claude_client)
             continue
