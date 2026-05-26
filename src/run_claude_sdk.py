@@ -8,7 +8,7 @@ from anthropic import Anthropic
 load_dotenv()
 
 # load custom modules
-from utils.utils_claude import claude_execute
+from utils.utils_claude import claude_execute, generate_dataset
 
 EXIT_COMMANDS = frozenset({"exit", "quit", "q"})
 
@@ -35,6 +35,10 @@ def main() -> None:
         if user_message.lower() in EXIT_COMMANDS:
             print("Bye.")
             break
+
+        if "generate dataset" in user_message.lower():
+            generate_dataset(claude_client)
+            continue
 
         print("Claude:")
         conversation = claude_execute(claude_client, conversation, user_message)

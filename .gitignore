@@ -10,3 +10,6 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# datasets
+datasets/

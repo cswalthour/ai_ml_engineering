@@ -117,3 +117,34 @@ def build_system_parameter(persona_info: dict) -> list:
             "text": system_prompt
         }
     ]
+
+STOP_SEQ_PATTERN = re.compile(
+      r"stop(?:_seq(?:uences?)?|sequences?)?\s*[=:]\s*\[([^\]]+)\]",
+      re.IGNORECASE,
+  )
+
+# stop seq detection
+def detect_stop_seq(message: str) -> dict:
+    """
+    Detect stop sequences specified in the message, e.g.:
+    stop=["</answer>", "Human:"]
+    Returns: {
+        'has_stop_seq': bool,
+        'stop_sequences': list or None,
+        'cleaned_message': str
+    }
+    """
+    match = STOP_SEQ_PATTERN.search(message)
+    if match:
+        raw = match.group(1)
+        sequences = [s.strip().strip('"\'') for s in raw.split(',') if s.strip()]
+        return {
+            'has_stop_seq': True,
+            'stop_sequences': sequences,
+            'cleaned_message': STOP_SEQ_PATTERN.sub('', message).strip(),
+        }
+    return {
+        'has_stop_seq': False,
+        'stop_sequences': None,
+        'cleaned_message': message,
+    }
