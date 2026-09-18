@@ -186,7 +186,12 @@
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [yyyy] [name of copyright owner]
+   Copyright 2025 Christopher Walthour
+
+   Portions of this work are derived from Snowflake's "Build Agentic AI
+   Application in Snowflake" quickstart guide
+   (https://quickstarts.snowflake.com/guide/build-agentic-application-in-snowflake/index.html),
+   Copyright Snowflake Inc., also licensed under the Apache License, Version 2.0.
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
