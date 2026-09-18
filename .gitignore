@@ -13,3 +13,9 @@ __pycache__/
 
 # datasets
 datasets/
+
+# local MCP server config (env-specific)
+.mcp.json
+
+# generated/pulled site assets
+site/
