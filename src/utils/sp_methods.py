@@ -100,6 +100,46 @@ def create_snowflake_session(
     # return session
     return session
 
+def _split_sql_statements(sql_script: str) -> list[str]:
+    """Split a SQL script on semicolons, ignoring semicolons inside single-quoted strings."""
+    statements = []
+    current = []
+    in_quote = False
+    i = 0
+    while i < len(sql_script):
+        ch = sql_script[i]
+        # skip single-line comments (but not inside quotes)
+        if ch == "-" and not in_quote and i + 1 < len(sql_script) and sql_script[i + 1] == "-":
+            # consume until end of line
+            while i < len(sql_script) and sql_script[i] != "\n":
+                i += 1
+            continue
+        elif ch == "'" and not in_quote:
+            in_quote = True
+            current.append(ch)
+        elif ch == "'" and in_quote:
+            # handle escaped quotes ('')
+            if i + 1 < len(sql_script) and sql_script[i + 1] == "'":
+                current.append("''")
+                i += 1
+            else:
+                in_quote = False
+                current.append(ch)
+        elif ch == ";" and not in_quote:
+            stmt = "".join(current).strip()
+            if stmt:
+                statements.append(stmt)
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    # handle any trailing statement without a semicolon
+    stmt = "".join(current).strip()
+    if stmt:
+        statements.append(stmt)
+    return statements
+
+
 # method to run a sql script
 def run_sql_script(
     session,
@@ -141,8 +181,8 @@ def run_sql_script(
             for old, new in replacements.items():
                 sql_script = sql_script.replace(old, new)
 
-        # split statements on semicolons (naive split, but OK for these scripts)
-        statements = [stmt.strip() for stmt in sql_script.split(";") if stmt.strip()]
+        # split statements on semicolons, respecting single-quoted strings
+        statements = _split_sql_statements(sql_script)
 
         # execute statements one-by-one
         for stmt in statements:
